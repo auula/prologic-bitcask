@@ -10,12 +10,12 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/abcum/lcp"
 	"github.com/gofrs/flock"
 	art "github.com/plar/go-adaptive-radix-tree"
+	sync "github.com/sasha-s/go-deadlock"
 	log "github.com/sirupsen/logrus"
 
 	"git.mills.io/prologic/bitcask/internal"
@@ -255,10 +255,22 @@ func (b *Bitcask) Sift(f func(key []byte) (bool, error)) (err error) {
 			keysToDelete.Insert(node.Key(), true)
 			return true
 		}
-		var shouldDelete bool
-		if shouldDelete, err = f(node.Key()); err != nil {
+		resCh := make(chan struct {
+			bool
+			error
+		}, 1)
+		go func() {
+			del, err := f(node.Key())
+			resCh <- struct {
+				bool
+				error
+			}{del, err}
+		}()
+		res := <-resCh
+		if res.error != nil {
 			return false
-		} else if shouldDelete {
+		}
+		if res.bool {
 			keysToDelete.Insert(node.Key(), true)
 		}
 		return true
@@ -307,7 +319,12 @@ func (b *Bitcask) Scan(prefix []byte, f func(key []byte) error) (err error) {
 			return true
 		}
 
-		if err = f(node.Key()); err != nil {
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- f(node.Key())
+		}()
+		err := <-errCh
+		if err != nil {
 			return false
 		}
 		return true
@@ -333,10 +350,22 @@ func (b *Bitcask) SiftScan(prefix []byte, f func(key []byte) (bool, error)) (err
 			keysToDelete.Insert(node.Key(), true)
 			return true
 		}
-		var shouldDelete bool
-		if shouldDelete, err = f(node.Key()); err != nil {
+		resCh := make(chan struct {
+			bool
+			error
+		}, 1)
+		go func() {
+			del, err := f(node.Key())
+			resCh <- struct {
+				bool
+				error
+			}{del, err}
+		}()
+		res := <-resCh
+		if res.error != nil {
 			return false
-		} else if shouldDelete {
+		}
+		if res.bool {
 			keysToDelete.Insert(node.Key(), true)
 		}
 		return true
@@ -371,7 +400,12 @@ func (b *Bitcask) Range(start, end []byte, f func(key []byte) error) (err error)
 
 	b.trie.ForEachPrefix(commonPrefix, func(node art.Node) bool {
 		if bytes.Compare(node.Key(), start) >= 0 && bytes.Compare(node.Key(), end) <= 0 {
-			if err = f(node.Key()); err != nil {
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- f(node.Key())
+			}()
+			err := <-errCh
+			if err != nil {
 				return false
 			}
 			return true
@@ -408,10 +442,22 @@ func (b *Bitcask) SiftRange(start, end []byte, f func(key []byte) (bool, error))
 				keysToDelete.Insert(node.Key(), true)
 				return true
 			}
-			var shouldDelete bool
-			if shouldDelete, err = f(node.Key()); err != nil {
+			resCh := make(chan struct {
+				bool
+				error
+			}, 1)
+			go func() {
+				del, err := f(node.Key())
+				resCh <- struct {
+					bool
+					error
+				}{del, err}
+			}()
+			res := <-resCh
+			if res.error != nil {
 				return false
-			} else if shouldDelete {
+			}
+			if res.bool {
 				keysToDelete.Insert(node.Key(), true)
 			}
 			return true
@@ -498,7 +544,12 @@ func (b *Bitcask) Fold(f func(key []byte) error) (err error) {
 	defer b.mu.RUnlock()
 
 	b.trie.ForEach(func(node art.Node) bool {
-		if err = f(node.Key()); err != nil {
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- f(node.Key())
+		}()
+		err := <-errCh
+		if err != nil {
 			return false
 		}
 		return true
@@ -1037,6 +1088,7 @@ func loadIndexFromDatafile(t art.Tree, ttlIndex art.Tree, df data.Datafile) erro
 		}
 		// Tombstone value  (deleted key)
 		if len(e.Value) == 0 {
+			fmt.Printf("skipping tombstone value for %s\n", string(e.Key))
 			t.Delete(e.Key)
 			offset += n
 			continue

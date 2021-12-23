@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"git.mills.io/prologic/bitcask/internal"
 	"git.mills.io/prologic/bitcask/internal/data/codec"
 	"github.com/pkg/errors"
+	sync "github.com/sasha-s/go-deadlock"
 	"golang.org/x/exp/mmap"
 )
 
